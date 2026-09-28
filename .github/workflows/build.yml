@@ -1,0 +1,85 @@
+name: Build Binaries (Windows & Linux)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: PST-CUIT-Extractor-Windows.exe
+            binary_path: dist/PST-CUIT-Extractor.exe
+          - os: ubuntu-latest
+            artifact_name: PST-CUIT-Extractor-Linux
+            binary_path: dist/pst-cuit-extractor
+
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # Dependencias de sistema requeridas en Linux para GUI y pypff
+      - name: Instalar dependencias de Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk libpff-dev build-essential
+
+      - name: Instalar dependencias de Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Compilar con PyInstaller (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          pyinstaller --noconsole --onefile --name "PST-CUIT-Extractor" --collect-all customtkinter main.py
+
+      - name: Compilar con PyInstaller (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          pyinstaller --noconsole --onefile --name "pst-cuit-extractor" --collect-all customtkinter main.py
+
+      # Sube los ejecutables de prueba como Artifacts (Disponibles en la pestaña Actions para probar)
+      - name: Subir artefacto de prueba
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.binary_path }}
+          retention-days: 7
+
+  # Este paso solo se ejecuta si tú creaste un Tag (ej: git tag v1.0.0 && git push origin v1.0.0)
+  release:
+    name: Publicar Release Oficial
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Descargar artefactos compilados
+        uses: actions/download-artifact@v4
+
+      - name: Crear GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            PST-CUIT-Extractor-Windows.exe/PST-CUIT-Extractor.exe
+            PST-CUIT-Extractor-Linux/pst-cuit-extractor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

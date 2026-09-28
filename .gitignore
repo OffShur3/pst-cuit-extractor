@@ -1,0 +1,33 @@
+# Entornos virtuales
+venv/
+env/
+.env
+
+# Archivos de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Credenciales y secretos (CRÍTICO: nunca subir a Git)
+*.json
+service_account.json
+credentials.json
+
+# Datos locales y bases de prueba
+data/
+*.db
+*.sqlite3
+*.pst
+*.log
+
+# Compilaciones y binarios locales
+build/
+dist/
+*.spec
+*.bin
+*.exe
+
+# IDEs y editores
+.vscode/
+.idea/
+*.swp

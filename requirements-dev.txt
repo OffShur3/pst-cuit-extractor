@@ -1,0 +1,7 @@
+-r requirements.txt
+
+# Empaquetado multiplataforma
+pyinstaller>=6.0.0
+
+# Pruebas automatizadas
+pytest>=7.4.0

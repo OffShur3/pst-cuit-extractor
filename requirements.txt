@@ -1,0 +1,13 @@
+# Lector agnóstico de archivos PST
+libpff-python>=20211114
+
+# Interfaz gráfica moderna y liviana
+customtkinter>=5.2.0
+
+# SDK de Google Cloud BigQuery y optimización de lotes
+google-cloud-bigquery>=3.14.0
+pyarrow>=12.0.0
+db-dtypes>=1.1.1
+
+# Variables de entorno
+python-dotenv>=1.0.0
