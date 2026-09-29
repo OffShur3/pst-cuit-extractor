@@ -10,10 +10,11 @@ En entornos corporativos y de servicios de pago electrónico, el procesamiento d
 
 Este proyecto reemplaza tareas manuales intensivas por una canalización automatizada resiliente, logrando:
 
-- **Reducción de tiempos operativos:** Procesamiento masivo capaz de transformar cientos de miles de correos en registros comerciales unificados en cuestión de minutos.
-- **Garantía de integridad fiscal:** Validación criptográfica de CUITs argentinos mediante el algoritmo de Módulo 11 (estándar AFIP) antes del almacenamiento.
-- **Consolidación de datos (Single Source of Truth):** Transformación de tickets individuales dispersos en un maestro de clientes unificado por CUIT, deduplicando terminales, teléfonos, códigos de comercio y direcciones.
-- **Escalabilidad y costo cero de infraestructura:** Arquitectura orientada a BigQuery mediante tareas por lotes (Load Jobs), eliminando el consumo innecesario de cuotas y permitiendo analítica directa en Google Sheets (Connected Sheets) sin sobrecargar estaciones de trabajo.
+- **Procesamiento granular (1 fila por correo):** Cada mensaje o ticket procesado genera un registro transaccional independiente para su auditoría y análisis temporal.
+- **Garantía de integridad fiscal:** Validación algorítmica de CUITs argentinos mediante el algoritmo de Módulo 11 (estándar AFIP) y normalización numérica pura (11 dígitos sin guiones).
+- **Desglose atómico de domicilios:** Extracción estructurada de cada componente de la dirección de instalación (calle, altura, piso, departamento, código postal, localidad y provincia).
+- **Idempotencia y trazabilidad absoluta (`mail_id`):** Incorporación del identificador único de correo al final de cada registro, permitiendo contrastar contra la base en BigQuery para omitir duplicados ante múltiples PSTs o actualizaciones continuas.
+- **Escalabilidad y costo cero de infraestructura:** Arquitectura orientada a BigQuery mediante tareas por lotes (Load Jobs con `WRITE_APPEND`), eliminando el consumo de cuotas DML y permitiendo analítica directa en Google Sheets (Connected Sheets).
 
 ---
 
@@ -22,7 +23,7 @@ Este proyecto reemplaza tareas manuales intensivas por una canalización automat
 El sistema opera bajo un esquema desacoplado y tolerante a fallos compuesto por cuatro capas:
 
 ```
-[ Archivo Outlook .PST ]
+[ Archivos Outlook .PST ]
           │
           ▼
 ┌──────────────────────────────────────────────┐
@@ -35,53 +36,53 @@ El sistema opera bajo un esquema desacoplado y tolerante a fallos compuesto por 
 ┌──────────────────────────────────────────────┐
 │ 2. Motor de Normalización y Validación Regex │
 │    - Validación estricta Módulo 11           │
-│    - Parsing posicional de campos Fiserv     │
+│    - CUIT numérico puro (11 dígitos)         │
+│    - Desglose de dirección posicional        │
 └──────────────────────────────────────────────┘
           │
           ▼
 ┌──────────────────────────────────────────────┐
 │ 3. Almacenamiento Intermedio (SQLite WAL)    │
 │    - Checkpoint transaccional (Pausa/Resume) │
-│    - Agrupación acumulativa por CUIT         │
+│    - Control anti-duplicados por mail_id     │
 └──────────────────────────────────────────────┘
           │
           ▼
 ┌──────────────────────────────────────────────┐
 │ 4. Sincronización Cloud (Google BigQuery)    │
-│    - Cargas por lotes atómicas (sin DML)     │
-│    - Consulta conectada en Google Sheets     │
+│    - Chequeo previo de mail_ids en la nube   │
+│    - Inserción por lotes sin DML             │
+│    - Conector nativo en Google Sheets        │
 └──────────────────────────────────────────────┘
 ```
 
-### Componentes Principales
-
-- **Lector PST Agnóstico (`src/extractor/pst_reader.py`):** Utiliza enlaces nativos de `libpff` para inspeccionar la estructura jerárquica de carpetas de Outlook sin depender de dependencias propietarias ni de la instalación previa de Microsoft Office. Implementa decodificación multietapa para preservar acentuación y caracteres del español.
-- **Motor de Reglas y Validación (`src/parser/regex_engine.py`):** Extrae de forma determinista metadatos de tickets de POS (Terminal, MC, Vendedor, Dirección, Localidad, Teléfono, Tier y Denominación de equipo). Descarta registros no verificados mediante el dígito verificador fiscal de AFIP.
-- **Gestor de Persistencia y Checkpoints (`src/storage/db_manager.py`):** Implementa SQLite con modo Write-Ahead Logging (WAL) y asignación de memoria extendida. Mantiene un registro de control de estado que permite reanudar tareas interrumpidas exactamente en el último mensaje procesado.
-- **Sincronizador BigQuery (`src/integrations/bigquery_sync.py`):** Diseñado específicamente para entornos empresariales y BigQuery Sandbox. Descarga metadatos previos, ejecuta la unión acumulativa de conjuntos en local y reemplaza la tabla destino mediante operaciones atómicas libres de costos por consulta DML.
-- **Interfaz de Usuario Desktop (`src/ui/app.py`):** GUI flotante y compacta construida sobre `CustomTkinter`. La ejecución de procesos intensivos se delega a hilos secundarios (`threading`), asegurando la responsividad continua de la interfaz y proveyendo métricas visuales en tiempo real.
-
 ---
 
-## 3. Modelo de Datos Consolidado (BigQuery / SQLite)
+## 3. Modelo de Datos Final (BigQuery / SQLite)
 
-Cada fila representa una entidad comercial única con historial acumulado:
+Cada fila representa un correo o ticket procesado con sus atributos comerciales:
 
-| Campo | Tipo | Descripción |
-|---|---|---|
-| `cuit` | STRING | Clave primaria fiscal normalizada (XX-XXXXXXXX-X) |
-| `razon_social` | STRING | Razón social oficial más reciente |
-| `nombres` | STRING | Lista consolidada de nombres de fantasía/comercio |
-| `tier` | STRING | Nivel de categorización de servicio (ej. VIP) |
-| `terminales` | STRING | Lista acumulativa de números de terminales Posnet |
-| `telefonos` | STRING | Números telefónicos deduplicados |
-| `direcciones` | STRING | Domicilios de instalación vinculados al contribuyente |
-| `mcs` | STRING | Códigos de comercio de tarjeta de crédito (MasterCard) |
-| `denominaciones`| STRING | Modelos de hardware provistos (ej. Clover Flex) |
-| `vendedores` | STRING | Identificadores y nombres de ejecutivos asignados |
-| `otros` | STRING | Observaciones y zonas comerciales operativas |
-| `total_tickets` | INTEGER | Volumen histórico de solicitudes registradas |
-| `ultimo_contacto`| STRING | Timestamp del último evento registrado |
+| # | Campo | Tipo | Descripción |
+|---|---|---|---|
+| 1 | `cuit` | STRING | CUIT numérico sin guiones (ej. `20441769734`) |
+| 2 | `razon_social` | STRING | Razón social identificada en el cuerpo |
+| 3 | `nombre` | STRING | Nombre de fantasía o comercio destinatario |
+| 4 | `tier` | STRING | Categorización de servicio (ej. VIP / Estándar) |
+| 5 | `terminal` | STRING | Número de terminal Posnet asociada |
+| 6 | `mc` | STRING | Código de comercio de tarjeta MasterCard |
+| 7 | `denominacion`| STRING | Modelo de equipamiento provisto (ej. Clover Flex) |
+| 8 | `calle` | STRING | Nombre de la arteria o calle de instalación |
+| 9 | `altura` | STRING | Altura catastral o numeración |
+| 10| `piso` | STRING | Nivel o piso si aplica |
+| 11| `departamento` | STRING | Unidad funcional o departamento |
+| 12| `codigo_postal`| STRING | Código Postal (C.P.) |
+| 13| `localidad` | STRING | Ciudad o localidad de instalación |
+| 14| `provincia` | STRING | Jurisdicción provincial |
+| 15| `telefono` | STRING | Teléfono de contacto registrado |
+| 16| `vendedor` | STRING | Código y denominación del ejecutivo o sucursal |
+| 17| `otros` | STRING | Zona comercial y observaciones operativas |
+| 18| `fecha_email` | STRING | Fecha y hora original de recepción del mensaje |
+| 19| `mail_id` | STRING | Identificador único de mensaje para auditoría |
 
 ---
 
@@ -89,7 +90,7 @@ Cada fila representa una entidad comercial única con historial acumulado:
 
 ### Requisitos del Sistema
 - Python 3.10 o superior.
-- Librería de sistema Tcl/Tk (`tk` en distribuciones basadas en Arch Linux, `python3-tk` en Debian/Ubuntu).
+- Librería de sistema Tcl/Tk (`tk` en Arch/Endeavour/Manjaro, `python3-tk` en Debian/Ubuntu).
 
 ### Configuración del Entorno de Desarrollo
 ```bash
@@ -114,7 +115,7 @@ python main.py
 ### Compilación Local para Linux
 ```bash
 ./scripts/build_linux.sh
-# El ejecutable se generará en dist/pst-cuit-extractor
+# El binario se generará en dist/pst-cuit-extractor
 ```
 
 ---
@@ -123,15 +124,19 @@ python main.py
 
 El repositorio incorpora un flujo automatizado mediante **GitHub Actions** (`.github/workflows/build.yml`):
 
-1. **Matriz de Compilación Cruzada:**
-   - Compilación en runner nativo Windows (`windows-latest`) generando `PST-CUIT-Extractor-Windows.exe`.
-   - Compilación en runner nativo Linux (`ubuntu-latest`) generando `PST-CUIT-Extractor-Linux`.
-2. **Generación de Artefactos de Prueba:** Ante cualquier evento de `push` o `pull_request`, los binarios resultantes quedan disponibles en la pestaña de artefactos de GitHub Actions para validación interna sin alterar el historial público.
-3. **Distribución Formal de Versiones:** La creación de etiquetas de versión (`git tag vX.Y.Z`) activa la publicación automática de un GitHub Release con los instalables finales adjuntos.
+1. **Compilación Multiplataforma:**
+   - Compilación en runner Windows (`windows-latest`) generando `PST-CUIT-Extractor-Windows.exe`.
+   - Compilación en runner Linux (`ubuntu-latest`) generando `PST-CUIT-Extractor-Linux`.
+2. **Artefactos de Prueba:** En cada `push` a ramas principales, los binarios se empaquetan como artefactos descargables desde GitHub Actions para pruebas intermedias.
+3. **Publicación Automática de Releases:** Al crear y subir una etiqueta de versión (`git tag vX.Y.Z`), el workflow compila ambos sistemas y publica un Release formal adjuntando el contenido de `CHANGELOG.md` como nota descriptiva.
 
 ---
 
 ## 6. Seguridad y Gobernanza de Datos
 
 - **Aislamiento de Credenciales:** Los archivos de servicio de Google Cloud (`service_account.json`), bases SQLite intermedias (`.db`) y archivos de correo corporativo (`.pst`) se encuentran estrictamente excluidos del control de versiones a través de `.gitignore`.
-- **Acceso por Principio de Menor Privilegio:** La cuenta de servicio de GCP solo requiere permisos de lectura/escritura a nivel Dataset (`BigQuery Data Editor` y `BigQuery Job User`), sin exigir privilegios administrativos en el proyecto global.
+- **Acceso por Principio de Menor Privilegio:** La cuenta de servicio de GCP solo requiere permisos a nivel Dataset (`BigQuery Data Editor` y `BigQuery Job User`).
+```
+
+---
+

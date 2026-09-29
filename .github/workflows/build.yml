@@ -32,7 +32,6 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      # Dependencias de sistema requeridas en Linux para GUI y pypff
       - name: Instalar dependencias de Linux
         if: runner.os == 'Linux'
         run: |
@@ -55,7 +54,6 @@ jobs:
         run: |
           pyinstaller --noconsole --onefile --name "pst-cuit-extractor" --collect-all customtkinter main.py
 
-      # Sube los ejecutables de prueba como Artifacts (Disponibles en la pestaña Actions para probar)
       - name: Subir artefacto de prueba
         uses: actions/upload-artifact@v4
         with:
@@ -63,7 +61,6 @@ jobs:
           path: ${{ matrix.binary_path }}
           retention-days: 7
 
-  # Este paso solo se ejecuta si tú creaste un Tag (ej: git tag v1.0.0 && git push origin v1.0.0)
   release:
     name: Publicar Release Oficial
     needs: build
@@ -72,14 +69,20 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Clonar repositorio para leer Changelog
+        uses: actions/checkout@v4
+
       - name: Descargar artefactos compilados
         uses: actions/download-artifact@v4
+        with:
+          path: release_artifacts
 
-      - name: Crear GitHub Release
+      - name: Crear GitHub Release con binarios adjuntos
         uses: softprops/action-gh-release@v2
         with:
+          body_path: CHANGELOG.md   # <--- Inyecta el texto del Changelog directamente en el Release
           files: |
-            PST-CUIT-Extractor-Windows.exe/PST-CUIT-Extractor.exe
-            PST-CUIT-Extractor-Linux/pst-cuit-extractor
+            release_artifacts/**/*.exe
+            release_artifacts/**/pst-cuit-extractor
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

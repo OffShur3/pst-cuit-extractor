@@ -7,6 +7,28 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ---
 
+## [1.1.0] - 2026-09-29
+
+### Cambiado
+- **Modelo de datos granular:** Se abandonó la consolidación agregada por CUIT único. Ahora cada correo procesado genera un registro transaccional independiente (1 fila por correo) tanto en la base local como en Google BigQuery.
+- **Normalización de CUIT:** El formato de CUIT pasó de la representación con guiones (`XX-XXXXXXXX-X`) a un formato numérico continuo de 11 dígitos (`20441769734`).
+- **Desglose atómico de domicilios:** La dirección de instalación dejó de guardarse como cadena concatenada y pasó a dividirse en 7 columnas independientes: `calle`, `altura`, `piso`, `departamento`, `codigo_postal`, `localidad` y `provincia`.
+- **Estrategia de carga en BigQuery:** Transición de sobreescritura total (`WRITE_TRUNCATE`) a cargas incrementales por lotes (`WRITE_APPEND`), manteniendo compatibilidad con BigQuery Sandbox (sin consultas DML).
+- **Métrica temporal:** Se sustituyó el campo `ultimo_contacto` por `fecha_email`, conservando la fecha y hora original de recepción del mensaje.
+- **Rediseño de interfaz gráfica:** La ventana principal de `CustomTkinter` se compactó a un formato flotante centrado de 500x580 px con distribución basada en tarjetas, reduciendo el consumo de espacio en pantalla.
+- **Automatización de releases:** Se configuró el workflow de GitHub Actions para inyectar automáticamente el contenido de `CHANGELOG.md` en el cuerpo del Release oficial (`body_path`).
+
+### Agregado
+- **Campo de auditoría `mail_id`:** Incorporación de un identificador técnico único en la columna 19 para trazabilidad entre los registros de BigQuery y los correos originales de Outlook.
+- **Mecanismo de idempotencia remoto:** Función `get_existing_mail_ids` que consulta los identificadores ya presentes en BigQuery antes de sincronizar, evitando duplicar registros ante reprocesamientos del mismo archivo o ingesta de múltiples PSTs.
+- **Reseteo automático de sincronización:** Función `mark_all_unsynced` vinculada a `--reset-bq` para reactivar la sincronización local automáticamente si se recrea la tabla en la nube.
+
+### Eliminado
+- Tabla intermedia `consolidated_clients` y módulo de consolidación grupal por conjuntos.
+- Columnas `asunto`, `message_id` y métricas agregadas como `total_tickets` en el esquema exportado a BigQuery.
+
+---
+
 ## [1.0.0] - 2026-09-28
 
 ### Agregado

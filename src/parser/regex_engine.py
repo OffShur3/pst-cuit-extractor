@@ -14,12 +14,36 @@ def validate_cuit(cuit_str: str) -> bool:
     return verifier == int(clean_cuit[10])
 
 def format_cuit(cuit_str: str) -> str:
-    clean = re.sub(r"\D", "", cuit_str)
-    return f"{clean[:2]}-{clean[2:10]}-{clean[10]}"
+    """Devuelve el CUIT limpio solo con números (ej: 20441769734)."""
+    return re.sub(r"\D", "", cuit_str)
 
 def _find_field(pattern: str, text: str) -> str:
     match = re.search(pattern, text, re.IGNORECASE)
     return match.group(1).strip() if match else ""
+
+def parse_direccion(dir_text: str) -> Dict[str, str]:
+    """Separa la dirección en partes individuales."""
+    parts = {
+        "calle": "", "altura": "", "piso": "", "departamento": "",
+        "codigo_postal": "", "localidad": "", "provincia": ""
+    }
+    if not dir_text:
+        return parts
+
+    patterns = {
+        "calle": r"calle:\s*([^;]+)",
+        "altura": r"altura:\s*([^;]+)",
+        "piso": r"piso:\s*([^;]*)",
+        "departamento": r"departamento:\s*([^;]*)",
+        "codigo_postal": r"C\.P\.:\s*([^;]+)",
+        "localidad": r"localidad:\s*([^;]+)",
+        "provincia": r"provincia:\s*([^;\n\r]+)",
+    }
+    for field, pat in patterns.items():
+        m = re.search(pat, dir_text, re.IGNORECASE)
+        if m:
+            parts[field] = m.group(1).strip()
+    return parts
 
 def extract_ticket_data(subject: str, body: str) -> Optional[Dict[str, Any]]:
     full_text = f"{subject}\n{body}"
@@ -34,32 +58,29 @@ def extract_ticket_data(subject: str, body: str) -> Optional[Dict[str, Any]]:
     if not cuit_match or not validate_cuit(cuit_match):
         return None
 
-    # Tier / VIP
+    # Tier
     tier = _find_field(r"Tier:\s*\n*\s*([^\n\r]+)", body)
     if not tier and "CLIENTE VIP" in subject.upper():
         tier = "VIP"
 
     # Vendedor
-    codigo_nombre = _find_field(r"C[oó\ufffd]digo-nombre:\s*([^\n\r]+)", body)
+    vendedor = _find_field(r"C[oó\ufffd]digo-nombre:\s*([^\n\r]+)", body)
 
-    # Razón Social y Nombre Fantasía
+    # Identificación del comercio
     razon_social = _find_field(r"Raz[oó\ufffd]n\s+Social:\s*([^\n\r]+)", body)
     nombre = _find_field(r"Destinatario:\s*\n*\s*Nombre:\s*([^\n\r]+)", body)
 
-    # Dirección y Teléfono
-    direccion = _find_field(r"Direcci[oó\ufffd]n\s+de\s+instalaci[oó\ufffd]n:\s*([^\n\r]+)", body)
+    # Desglose de dirección
+    dir_raw = _find_field(r"Direcci[oó\ufffd]n\s+de\s+instalaci[oó\ufffd]n:\s*([^\n\r]+)", body)
+    dir_parts = parse_direccion(dir_raw)
+
+    # Contacto y Terminal
     telefono = _find_field(r"Tel[eé\ufffd]fono:\s*([^\n\r]+)", body)
-
-    # Terminal Posnet
     terminal = _find_field(r"Terminal\s+Posnet\s+Nro\s*[:=-]?\s*(\d+)", subject)
-
-    # Código MC (MasterCard)
     mc = _find_field(r"MC\s*-->\s*(\d+)", body)
-
-    # Denominación
     denominacion = _find_field(r"Denominaci[oó\ufffd]n:\s*([^\n\r]+)", body)
 
-    # Otros (Zona + Observaciones si existen)
+    # Otros
     zona = _find_field(r"Zona:\s*([^\n\r]+)", body)
     observaciones = _find_field(r"Observaciones:\s*\n*\s*([^\n\r]+)", body)
     otros_parts = []
@@ -68,15 +89,21 @@ def extract_ticket_data(subject: str, body: str) -> Optional[Dict[str, Any]]:
     otros = " | ".join(otros_parts)
 
     return {
-        "tier": tier,
-        "vendedor_codigo_nombre": codigo_nombre,
         "cuit": format_cuit(cuit_match),
         "razon_social": razon_social,
         "nombre": nombre,
-        "direccion_instalacion": direccion,
-        "telefono": telefono,
+        "tier": tier,
         "terminal": terminal,
         "mc": mc,
         "denominacion": denominacion,
+        "calle": dir_parts["calle"],
+        "altura": dir_parts["altura"],
+        "piso": dir_parts["piso"],
+        "departamento": dir_parts["departamento"],
+        "codigo_postal": dir_parts["codigo_postal"],
+        "localidad": dir_parts["localidad"],
+        "provincia": dir_parts["provincia"],
+        "telefono": telefono,
+        "vendedor": vendedor,
         "otros": otros
     }

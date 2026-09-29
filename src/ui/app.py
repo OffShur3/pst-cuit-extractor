@@ -20,13 +20,10 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("PST CUIT Extractor")
-        
-        # Tamaño compacto y flotante
         window_width = 500
         window_height = 580
         self.minsize(460, 520)
 
-        # Centrar la ventana en el monitor
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         x = (screen_width - window_width) // 2
@@ -41,26 +38,24 @@ class App(ctk.CTk):
         self._build_ui()
 
     def _build_ui(self):
-        # 1. Cabecera compacta
         self.header = ctk.CTkFrame(self, corner_radius=8, fg_color="transparent")
         self.header.pack(fill="x", padx=16, pady=(16, 6))
 
         self.title_lbl = ctk.CTkLabel(
             self.header,
-            text="PST CUIT Extractor",
+            text="Extractor de Correos & CUITs",
             font=ctk.CTkFont(size=17, weight="bold")
         )
         self.title_lbl.pack(anchor="w")
 
         self.desc_lbl = ctk.CTkLabel(
             self.header,
-            text="Procesamiento masivo de PST y sincronización a BigQuery.",
+            text="1 fila por correo, CUIT numérico y direcciones desglosadas.",
             font=ctk.CTkFont(size=11),
             text_color="gray"
         )
         self.desc_lbl.pack(anchor="w")
 
-        # 2. Tarjeta: Selector de archivo
         self.file_card = ctk.CTkFrame(self, corner_radius=8)
         self.file_card.pack(fill="x", padx=16, pady=6)
 
@@ -81,7 +76,6 @@ class App(ctk.CTk):
         )
         self.btn_browse.pack(anchor="e", padx=12, pady=(0, 10))
 
-        # 3. Tarjeta: Progreso y Configuración
         self.progress_card = ctk.CTkFrame(self, corner_radius=8)
         self.progress_card.pack(fill="x", padx=16, pady=6)
 
@@ -110,13 +104,12 @@ class App(ctk.CTk):
 
         self.counters_lbl = ctk.CTkLabel(
             self.progress_card,
-            text="Correos: 0 / 0 | CUITs únicos: 0",
+            text="Correos: 0 / 0 | Registros válidos: 0",
             font=ctk.CTkFont(size=10),
             text_color="gray"
         )
         self.counters_lbl.pack(anchor="w", padx=12, pady=(0, 10))
 
-        # 4. Consola de Logs compacta
         self.log_box = ctk.CTkTextbox(
             self,
             height=130,
@@ -126,7 +119,6 @@ class App(ctk.CTk):
         self.log_box.pack(fill="both", expand=True, padx=16, pady=6)
         self.log_box.configure(state="disabled")
 
-        # 5. Barra de acciones inferior
         self.actions_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.actions_frame.pack(fill="x", padx=16, pady=(6, 16))
 
@@ -229,37 +221,35 @@ class App(ctk.CTk):
                     processed_count += 1
                     data = extract_ticket_data(msg["subject"], msg["body"])
                     if data:
-                        data["message_id"] = msg["message_id"]
-                        data["subject"] = msg["subject"][:200]
-                        data["email_date"] = msg["delivery_time"]
+                        data["fecha_email"] = msg["delivery_time"]
+                        data["mail_id"] = msg["message_id"]
                         batch_records.append(data)
-                        cuit_counter += 1
 
                     if len(batch_records) >= 500 or processed_count % 50 == 0:
                         if batch_records:
-                            self.db.save_records_batch(batch_records)
+                            inserted = self.db.save_records_batch(batch_records)
+                            cuit_counter += inserted
                             batch_records.clear()
                         self.db.update_checkpoint(pst_id, processed_count, total_messages, completed=False)
 
                         progress = processed_count / max(1, total_messages)
-                        self.after(0, lambda p=progress, c=processed_count, t=total_messages: self._update_progress(p, c, t))
+                        self.after(0, lambda p=progress, c=processed_count, t=total_messages, v=cuit_counter: self._update_progress(p, c, t, v))
 
                 if batch_records:
-                    self.db.save_records_batch(batch_records)
+                    inserted = self.db.save_records_batch(batch_records)
+                    cuit_counter += inserted
                     batch_records.clear()
 
                 if not self.stop_requested:
                     self.db.update_checkpoint(pst_id, processed_count, total_messages, completed=True)
-                    self._log("Consolidando tickets por CUIT...")
-                    total_consolidados = self.db.consolidate_clients()
-                    self._log(f"✅ Finalizado. CUITs únicos: {total_consolidados:,}")
+                    self._log(f"✅ Extracción finalizada. {cuit_counter:,} correos válidos guardados.")
 
                     if self.chk_bigquery.get():
                         self._sync_bigquery()
 
                     elapsed = time.time() - start_time
                     self._log(f"🎉 Completado en {elapsed:.1f}s.")
-                    messagebox.showinfo("Éxito", f"Extracción finalizada.\nClientes únicos: {total_consolidados:,}")
+                    messagebox.showinfo("Éxito", f"Extracción finalizada.\nTotal correos procesados: {cuit_counter:,}")
                 else:
                     self._log("🛑 Detenido por el usuario. Avance guardado.")
 
@@ -278,15 +268,15 @@ class App(ctk.CTk):
             bq.authenticate()
             bq.ensure_infrastructure()
             synced = bq.sync_all_pending()
-            self._log(f"☁️ BigQuery actualizado: {synced:,} registros.")
+            self._log(f"☁️ BigQuery actualizado: {synced:,} filas agregadas.")
         except Exception as e:
             self._log(f"⚠️ Error BigQuery: {str(e)}")
 
-    def _update_progress(self, progress: float, processed: int, total: int):
+    def _update_progress(self, progress: float, processed: int, total: int, valid: int):
         self.progress_bar.set(progress)
         pct = int(progress * 100)
         self.status_lbl.configure(text=f"Procesando: {pct}%")
-        self.counters_lbl.configure(text=f"Correos: {processed:,} / {total:,}")
+        self.counters_lbl.configure(text=f"Correos: {processed:,} / {total:,} | Válidos: {valid:,}")
 
     def _reset_ui_state(self):
         self.btn_start.configure(state="normal")
