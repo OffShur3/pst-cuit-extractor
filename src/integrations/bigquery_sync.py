@@ -160,3 +160,58 @@ class BigQuerySyncManager:
                 progress_callback(synced, total_synced)
 
         return total_synced
+
+
+    def download_to_excel(self, destination_path: Path | str, progress_callback: Optional[Callable[[str], None]] = None) -> int:
+        """Descarga toda la tabla de BigQuery directamente a un archivo .xlsx con diseño pro."""
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+
+        if not self.client:
+            self.authenticate()
+
+        if progress_callback:
+            progress_callback("Consultando tabla en BigQuery...")
+
+        table = self.client.get_table(self._table_ref)
+        total_rows = table.num_rows
+
+        if progress_callback:
+            progress_callback(f"Descargando {total_rows:,} registros...")
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Clientes GCNET"
+
+        # Encabezados de columnas según el esquema de BigQuery
+        headers = [field.name for field in table.schema]
+        ws.append(headers)
+
+        # Diseño estético para los encabezados (Azul corporativo, texto blanco negrita)
+        header_fill = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
+        header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        # Inserción de filas desde BigQuery
+        row_count = 0
+        for row in self.client.list_rows(table):
+            ws.append([str(row[h]) if row[h] is not None else "" for h in headers])
+            row_count += 1
+            if progress_callback and row_count % 5000 == 0:
+                progress_callback(f"Procesando {row_count:,} de {total_rows:,} filas...")
+
+        # Congelar la primera fila para facilitar navegación
+        ws.freeze_panes = "A2"
+
+        # Autoajuste del ancho de cada columna para que no se corten los textos
+        for col_idx, col in enumerate(ws.columns, 1):
+            max_len = max(len(str(cell.value or "")) for cell in col)
+            col_letter = get_column_letter(col_idx)
+            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 45)
+
+        wb.save(str(destination_path))
+        return row_count

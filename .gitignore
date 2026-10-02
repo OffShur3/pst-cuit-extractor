@@ -19,6 +19,7 @@ data/
 *.sqlite3
 *.pst
 *.log
+skill.md
 
 # Compilaciones y binarios locales
 build/

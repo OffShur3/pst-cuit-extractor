@@ -19,10 +19,10 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("PST CUIT Extractor")
+        self.title("PST CUIT Extractor - Enterprise Data Management")
         window_width = 500
-        window_height = 580
-        self.minsize(460, 520)
+        window_height = 640
+        self.minsize(460, 560)
 
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
@@ -50,7 +50,7 @@ class App(ctk.CTk):
 
         self.desc_lbl = ctk.CTkLabel(
             self.header,
-            text="1 fila por correo, CUIT numérico y direcciones desglosadas.",
+            text="Procesamiento granular, validación AFIP y sincronización en BigQuery.",
             font=ctk.CTkFont(size=11),
             text_color="gray"
         )
@@ -81,7 +81,7 @@ class App(ctk.CTk):
 
         self.chk_bigquery = ctk.CTkCheckBox(
             self.progress_card,
-            text="Sincronizar a BigQuery al finalizar",
+            text="Sincronizar a BigQuery al finalizar extracción",
             font=ctk.CTkFont(size=11),
             checkbox_width=20,
             checkbox_height=20,
@@ -97,14 +97,14 @@ class App(ctk.CTk):
 
         self.status_lbl = ctk.CTkLabel(
             self.progress_card,
-            text="Esperando archivo...",
+            text="Estado: En espera de archivo.",
             font=ctk.CTkFont(size=11, weight="bold")
         )
         self.status_lbl.pack(anchor="w", padx=12, pady=(2, 2))
 
         self.counters_lbl = ctk.CTkLabel(
             self.progress_card,
-            text="Correos: 0 / 0 | Registros válidos: 0",
+            text="Correos: 0 / 0 | Registros procesados: 0",
             font=ctk.CTkFont(size=10),
             text_color="gray"
         )
@@ -120,7 +120,7 @@ class App(ctk.CTk):
         self.log_box.configure(state="disabled")
 
         self.actions_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.actions_frame.pack(fill="x", padx=16, pady=(6, 16))
+        self.actions_frame.pack(fill="x", padx=16, pady=(6, 6))
 
         self.btn_start = ctk.CTkButton(
             self.actions_frame,
@@ -146,6 +146,18 @@ class App(ctk.CTk):
         )
         self.btn_stop.pack(side="right")
 
+        # Botón para descargar directamente la base de BigQuery a Excel
+        self.btn_download_bq = ctk.CTkButton(
+            self,
+            text="Descargar Base de Datos a Excel (.xlsx)",
+            fg_color="#107C41",
+            hover_color="#0D5C30",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            height=36,
+            command=self._prompt_download_bigquery
+        )
+        self.btn_download_bq.pack(fill="x", padx=16, pady=(0, 16))
+
     def _log(self, message: str):
         def append():
             self.log_box.configure(state="normal")
@@ -157,15 +169,15 @@ class App(ctk.CTk):
 
     def _browse_file(self):
         file_selected = filedialog.askopenfilename(
-            title="Seleccionar PST",
+            title="Seleccionar archivo PST",
             filetypes=[("Archivos Outlook PST", "*.pst"), ("Todos los archivos", "*.*")]
         )
         if file_selected:
             self.selected_pst = Path(file_selected)
             self.file_path_entry.delete(0, "end")
             self.file_path_entry.insert(0, str(self.selected_pst))
-            self._log(f"Seleccionado: {self.selected_pst.name}")
-            self.status_lbl.configure(text="Listo para procesar.")
+            self._log(f"Archivo seleccionado: {self.selected_pst.name}")
+            self.status_lbl.configure(text="Estado: Listo para procesar.")
 
     def _start_processing(self):
         path_str = self.file_path_entry.get().strip()
@@ -179,6 +191,7 @@ class App(ctk.CTk):
 
         self.btn_start.configure(state="disabled")
         self.btn_browse.configure(state="disabled")
+        self.btn_download_bq.configure(state="disabled")
         self.btn_stop.configure(state="normal")
 
         thread = threading.Thread(target=self._worker_process, daemon=True)
@@ -188,15 +201,15 @@ class App(ctk.CTk):
         if self.is_running:
             self.stop_requested = True
             self.btn_stop.configure(state="disabled")
-            self._log("⚠️ Deteniendo proceso...")
+            self._log("Deteniendo proceso de extracción...")
 
     def _worker_process(self):
         start_time = time.time()
         pst_id = self.selected_pst.name
 
         try:
-            self._log(f"Abriendo {pst_id}...")
-            self.after(0, lambda: self.status_lbl.configure(text="Contando correos..."))
+            self._log(f"Abriendo archivo: {pst_id}")
+            self.after(0, lambda: self.status_lbl.configure(text="Estado: Contando correos..."))
 
             checkpoint = self.db.get_checkpoint(pst_id)
             skip_count = 0
@@ -204,11 +217,11 @@ class App(ctk.CTk):
                 processed, total, completed = checkpoint
                 if not completed:
                     skip_count = processed
-                    self._log(f"Reanudando desde correo {skip_count + 1}...")
+                    self._log(f"Reanudando desde el correo #{skip_count + 1}...")
 
             with PSTReader(self.selected_pst) as reader:
                 total_messages = reader.count_total_messages()
-                self._log(f"Total a procesar: {total_messages:,} correos")
+                self._log(f"Total a procesar: {total_messages:,} correos.")
 
                 processed_count = skip_count
                 batch_records = []
@@ -242,47 +255,101 @@ class App(ctk.CTk):
 
                 if not self.stop_requested:
                     self.db.update_checkpoint(pst_id, processed_count, total_messages, completed=True)
-                    self._log(f"✅ Extracción finalizada. {cuit_counter:,} correos válidos guardados.")
+                    self._log(f"Extracción finalizada. {cuit_counter:,} registros guardados localmente.")
 
                     if self.chk_bigquery.get():
                         self._sync_bigquery()
 
                     elapsed = time.time() - start_time
-                    self._log(f"🎉 Completado en {elapsed:.1f}s.")
-                    messagebox.showinfo("Éxito", f"Extracción finalizada.\nTotal correos procesados: {cuit_counter:,}")
+                    self._log(f"Operación finalizada en {elapsed:.1f} segundos.")
+                    messagebox.showinfo("Extracción Finalizada", f"Proceso completado exitosamente.\n\nTotal registros procesados: {cuit_counter:,}")
                 else:
-                    self._log("🛑 Detenido por el usuario. Avance guardado.")
+                    self._log("Proceso detenido por el usuario. El avance ha sido guardado.")
 
         except Exception as e:
-            self._log(f"❌ Error: {str(e)}")
+            self._log(f"Error durante el procesamiento: {str(e)}")
             messagebox.showerror("Error", str(e))
         finally:
             self.is_running = False
             self.after(0, self._reset_ui_state)
 
     def _sync_bigquery(self):
-        self._log("Sincronizando con BigQuery...")
-        self.after(0, lambda: self.status_lbl.configure(text="Subiendo a BigQuery..."))
+        self._log("Iniciando sincronización con Google BigQuery...")
+        self.after(0, lambda: self.status_lbl.configure(text="Estado: Sincronizando con BigQuery..."))
         try:
             bq = BigQuerySyncManager(db_manager=self.db)
             bq.authenticate()
             bq.ensure_infrastructure()
             synced = bq.sync_all_pending()
-            self._log(f"☁️ BigQuery actualizado: {synced:,} filas agregadas.")
+            self._log(f"BigQuery actualizado: {synced:,} filas registradas.")
         except Exception as e:
-            self._log(f"⚠️ Error BigQuery: {str(e)}")
+            self._log(f"Error de sincronización en BigQuery: {str(e)}")
+
+    def _prompt_download_bigquery(self):
+        if self.is_running:
+            messagebox.showwarning("Operación en Curso", "Aguarde a que finalice la tarea actual.")
+            return
+
+        file_selected = filedialog.asksaveasfilename(
+            title="Guardar base de datos como Excel",
+            defaultextension=".xlsx",
+            initialfile="Extraccion de Datos Clientes PST GCNET.xlsx",
+            filetypes=[("Libro de Excel (*.xlsx)", "*.xlsx"), ("Todos los archivos", "*.*")]
+        )
+
+        if not file_selected:
+            return
+
+        save_path = Path(file_selected)
+        self.is_running = True
+        self.btn_download_bq.configure(state="disabled")
+        self.btn_start.configure(state="disabled")
+        self.btn_browse.configure(state="disabled")
+
+        thread = threading.Thread(target=self._worker_download_bq, args=(save_path,), daemon=True)
+        thread.start()
+
+    def _worker_download_bq(self, save_path: Path):
+        try:
+            self._log(f"Iniciando descarga desde BigQuery...")
+            self.after(0, lambda: self.status_lbl.configure(text="Estado: Conectando con BigQuery..."))
+
+            bq = BigQuerySyncManager(db_manager=self.db)
+            bq.authenticate()
+
+            def on_progress(msg: str):
+                self._log(msg)
+                self.after(0, lambda m=msg: self.status_lbl.configure(text=f"Estado: {m}"))
+
+            total_rows = bq.download_to_excel(save_path, progress_callback=on_progress)
+
+            self._log(f"Descarga completada: {total_rows:,} registros guardados en {save_path.name}")
+            self.after(0, lambda: self.status_lbl.configure(text="Estado: Descarga completada."))
+            self.after(0, lambda: messagebox.showinfo(
+                "Exportación Exitosa",
+                f"La base de datos se ha exportado correctamente.\n\n"
+                f"Total de registros: {total_rows:,}\n"
+                f"Archivo: {save_path.name}"
+            ))
+        except Exception as e:
+            self._log(f"Error en la exportación: {str(e)}")
+            self.after(0, lambda err=str(e): messagebox.showerror("Error de Exportación", f"No se pudo completar la descarga:\n{err}"))
+        finally:
+            self.is_running = False
+            self.after(0, self._reset_ui_state)
 
     def _update_progress(self, progress: float, processed: int, total: int, valid: int):
         self.progress_bar.set(progress)
         pct = int(progress * 100)
-        self.status_lbl.configure(text=f"Procesando: {pct}%")
+        self.status_lbl.configure(text=f"Estado: Procesando ({pct}%)")
         self.counters_lbl.configure(text=f"Correos: {processed:,} / {total:,} | Válidos: {valid:,}")
 
     def _reset_ui_state(self):
         self.btn_start.configure(state="normal")
         self.btn_browse.configure(state="normal")
         self.btn_stop.configure(state="disabled")
-        self.status_lbl.configure(text="Finalizado.")
+        self.btn_download_bq.configure(state="normal")
+        self.status_lbl.configure(text="Estado: Listo.")
 
 
 def main():
