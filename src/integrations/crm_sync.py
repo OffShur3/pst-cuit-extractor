@@ -32,19 +32,24 @@ class CRMSyncManager:
             self.cuit_field_id = data.get("cuit_field_id", "QWtFH64E79RTPVj1dyYP")
 
     def _api_call(self, method: str, endpoint: str, payload: Optional[Dict] = None) -> Dict[str, Any]:
+        import urllib.request
+        import urllib.error
+
         url = f"{self.api_url}{endpoint}"
-        cmd = [
-            "curl", "-s", "-X", method, url,
-            "-H", f"Authorization: Bearer {self.api_token}",
-            "-H", f"Version: {self.api_ver}",
-            "-H", "Accept: application/json"
-        ]
+        data_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
+        headers = {
+            "Authorization": f"Bearer {self.api_token}",
+            "Version": self.api_ver,
+            "Accept": "application/json"
+        }
         if payload is not None:
-            cmd.extend(["-H", "Content-Type: application/json", "-d", json.dumps(payload)])
-        res = subprocess.run(cmd, capture_output=True, text=True)
+            headers["Content-Type"] = "application/json"
+
+        req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
         try:
-            return json.loads(res.stdout)
-        except Exception:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
             return {}
 
     def get_atlion_contacts_map(self) -> Dict[str, Dict[str, Any]]:
