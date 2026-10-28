@@ -19,6 +19,7 @@ data/
 *.sqlite3
 *.pst
 *.log
+*.txt
 skill.md
 
 # Compilaciones y binarios locales
@@ -32,3 +33,9 @@ dist/
 .vscode/
 .idea/
 *.swp
+
+# Credenciales de CRM Atlion
+CRM_account.json
+
+node_modules/
+auth_info_baileys/

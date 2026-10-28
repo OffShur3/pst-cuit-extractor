@@ -120,3 +120,30 @@ class DatabaseManager:
         with self.get_connection() as conn:
             row = conn.execute(query, (pst_id,)).fetchone()
             return (row["processed_messages"], row["total_messages"], bool(row["completed"])) if row else None
+
+    def get_all_unique_clients(self) -> List[Dict]:
+        query = """
+            SELECT cuit, 
+                   MAX(razon_social) as razon_social, 
+                   MAX(nombre) as nombre, 
+                   MAX(tier) as tier, 
+                   MAX(terminal) as terminal, 
+                   MAX(mc) as mc, 
+                   MAX(denominacion) as denominacion,
+                   MAX(calle) as calle, 
+                   MAX(altura) as altura, 
+                   MAX(piso) as piso, 
+                   MAX(departamento) as departamento, 
+                   MAX(codigo_postal) as codigo_postal, 
+                   MAX(localidad) as localidad, 
+                   MAX(provincia) as provincia,
+                   GROUP_CONCAT(DISTINCT telefono) as telefono,
+                   MAX(vendedor) as vendedor, 
+                   MAX(otros) as otros
+            FROM email_records
+            WHERE cuit IS NOT NULL AND cuit != ''
+            GROUP BY cuit
+        """
+        with self.get_connection() as conn:
+            rows = conn.execute(query).fetchall()
+            return [dict(r) for r in rows]

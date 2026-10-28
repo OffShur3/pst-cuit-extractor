@@ -7,6 +7,20 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ---
 
+## [1.2.0] - 2026-10-28
+
+### Agregado
+- **Detección inteligente de teléfonos adicionales:** El sistema ahora compara todos los teléfonos presentes en el PST con los números ya existentes en Atlion CRM (`phone` y `additionalPhones`). Si el contacto ya existía pero el PST contiene números nuevos, se agregan automáticamente sin pisar la información previa.
+- **Sincronización real con Atlion CRM (LeadConnector v2):** Nuevo botón en la UI `🚀 Subir Contactos a Atlion CRM (Producción)` y método `execute_production_sync` para dar de alta contactos nuevos y enriquecer los existentes directamente en la nube.
+- **Categorización refinada de Tags para CRM:**
+  - Nuevos registros: `["origen-base"]`.
+  - Contactos que recuperan número principal faltante: `["telefono-recuperado"]`.
+  - Contactos que incorporan números nuevos a los existentes: `["telefono-adicional"]`.
+  - Estado de conectividad: `tiene-whatsapp`, `solo-telefono-fijo`, `tiene-fijo` y `sin-telefono`.
+  - Preservación integral de tags preexistentes en la ficha del CRM mediante unión de conjuntos.
+
+---
+
 ## [1.1.0] - 2026-09-29
 
 ### Cambiado
