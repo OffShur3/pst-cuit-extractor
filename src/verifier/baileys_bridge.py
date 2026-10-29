@@ -11,6 +11,7 @@ NODE_SCRIPT = BASE_DIR / "src" / "verifier" / "check_whatsapp_batch.js"
 class WhatsAppVerifier:
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = str(db_path)
+        self.cache_only = False
         self._init_cache_table()
 
     def _init_cache_table(self):
@@ -70,20 +71,33 @@ class WhatsAppVerifier:
         missing = [p for p in all_clean if p not in results]
 
         if missing:
-            # Escribir archivo temporal para el script de Node
+            if self.cache_only:
+                # Durante la subida masiva al CRM, resolver en memoria sin levantar Node
+                for p in missing:
+                    results[p] = False
+                return results
+
             temp_json = BASE_DIR / "data" / "_temp_verify.json"
             temp_json.parent.mkdir(exist_ok=True)
             temp_json.write_text(json.dumps(missing), encoding="utf-8")
 
             try:
                 cmd = ["node", str(NODE_SCRIPT), str(temp_json)]
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
                 if res.stdout.strip():
                     new_verifications = json.loads(res.stdout.strip())
-                    self.save_verifications_to_cache(new_verifications)
-                    results.update(new_verifications)
-            except Exception as e:
-                print(f"⚠️ Error al consultar Baileys: {e}")
+                    # Guardar tanto los True como los False para que los fijos NUNCA vuelvan a invocar Node
+                    full_map = {p: bool(new_verifications.get(p, False)) for p in missing}
+                    self.save_verifications_to_cache(full_map)
+                    results.update(full_map)
+                else:
+                    fallback = {p: False for p in missing}
+                    self.save_verifications_to_cache(fallback)
+                    results.update(fallback)
+            except Exception:
+                fallback = {p: False for p in missing}
+                self.save_verifications_to_cache(fallback)
+                results.update(fallback)
             finally:
                 if temp_json.exists():
                     temp_json.unlink()

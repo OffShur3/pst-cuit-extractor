@@ -31,35 +31,80 @@ class CRMSyncManager:
             self.api_ver = data.get("api_version", "2021-07-28")
             self.cuit_field_id = data.get("cuit_field_id", "QWtFH64E79RTPVj1dyYP")
 
-    def _api_call(self, method: str, endpoint: str, payload: Optional[Dict] = None) -> Dict[str, Any]:
+    def _api_call(self, method: str, endpoint: str, payload: Optional[Dict] = None, max_retries: int = 4) -> Dict[str, Any]:
         import urllib.request
         import urllib.error
+        import time
 
         url = f"{self.api_url}{endpoint}"
         data_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
         headers = {
             "Authorization": f"Bearer {self.api_token}",
             "Version": self.api_ver,
-            "Accept": "application/json"
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         }
         if payload is not None:
             headers["Content-Type"] = "application/json"
 
-        req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-            return {}
+        # Cadencia preventiva para respetar el limite de LeadConnector (100 req / 10 seg)
+        time.sleep(0.11)
 
-    def get_atlion_contacts_map(self) -> Dict[str, Dict[str, Any]]:
+        for attempt in range(max_retries):
+            req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                # 429 = Rate limit | 500, 502, 503, 504 = Errores temporales de GoHighLevel/Cloudflare
+                if e.code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                    retry_header = e.headers.get("Retry-After")
+                    wait_sec = float(retry_header) if retry_header else (attempt + 1) * 1.5
+                    time.sleep(wait_sec)
+                    continue
+                try:
+                    return json.loads(e.read().decode("utf-8"))
+                except Exception:
+                    return {"statusCode": e.code, "message": str(e)}
+            except Exception as e:
+                # Timeouts, resets de conexion o caidas momentaneas de red
+                if attempt < max_retries - 1:
+                    time.sleep((attempt + 1) * 1.2)
+                    continue
+                return {"message": str(e)}
+
+        return {}
+
+    def get_atlion_contacts_map(
+        self,
+        progress_callback: Optional[Callable[[str, float], None]] = None,
+        max_cache_age_hours: float = 12.0
+    ) -> Dict[str, Dict[str, Any]]:
         """
-        Descarga TODOS los contactos de Atlion CRM y devuelve un diccionario con teléfonos y tags:
-        { cuit: { "id": contact_id, "phone": phone_number, "name": name, "additional_phones": [...], "tags": [...] } }
+        Descarga o recupera desde cache local los contactos de Atlion CRM.
+        Si la cache tiene menos de 12 horas, carga en 0.01s sin esperar 15 minutos.
         """
+        import time
+        cache_file = BASE_DIR / "data" / "atlion_contacts_cache.json"
+
+        # 1. Comprobar cache local existente
+        if cache_file.exists():
+            age_hours = (time.time() - cache_file.stat().st_mtime) / 3600.0
+            if age_hours < max_cache_age_hours:
+                try:
+                    cached_map = json.loads(cache_file.read_text(encoding="utf-8"))
+                    if cached_map and len(cached_map) > 500:
+                        if progress_callback:
+                            progress_callback(f"Cargados {len(cached_map):,} contactos de Atlion desde cache local (0s)...", 0.10)
+                        return cached_map
+                except Exception:
+                    pass
+
+        # 2. Descargar de la nube si no hay cache o expiro
         atlion_map = {}
         start_after = None
         start_after_id = None
+        total_fetched = 0
         
         while True:
             endpoint = f"/contacts/?locationId={self.location_id}&limit=100"
@@ -71,12 +116,15 @@ class CRMSyncManager:
             if not contacts:
                 break
                 
+            total_fetched += len(contacts)
+            if progress_callback and total_fetched % 500 == 0:
+                progress_callback(f"Descargando de Atlion CRM ({total_fetched:,} contactos)...", 0.08)
+
             for c in contacts:
                 cid = c.get("id")
                 cphone = (c.get("phone") or "").strip()
                 cname = c.get("contactName") or f"{c.get('firstName', '')} {c.get('lastName', '')}".strip()
                 
-                # Extraer additionalPhones existentes
                 raw_extras = c.get("additionalPhones") or []
                 c_extras = []
                 for item in raw_extras:
@@ -109,6 +157,14 @@ class CRMSyncManager:
             if not meta.get("nextPage") or not start_after or not start_after_id:
                 break
                 
+        # Guardar en cache local para no volver a esperar 15 minutos hoy
+        if atlion_map:
+            try:
+                cache_file.parent.mkdir(exist_ok=True)
+                cache_file.write_text(json.dumps(atlion_map, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
+
         return atlion_map
 
     def get_existing_cuits(self) -> Set[str]:
@@ -118,27 +174,46 @@ class CRMSyncManager:
         self,
         contact_id: str,
         phone: Optional[str],
-        additional_phones: Optional[List[Dict[str, str]]],
+        additional_phones: Optional[List[Any]],
         tags: List[str]
     ) -> bool:
-        """Actualiza el teléfono principal, teléfonos adicionales y tags combinados."""
+        """Actualiza el teléfono principal, adicionales y tags con fallback escalonado."""
         payload: Dict[str, Any] = {
             "tags": tags
         }
         if phone:
             payload["phone"] = phone
-        if additional_phones is not None:
-            payload["additionalPhones"] = additional_phones
+        if additional_phones:
+            clean_list = []
+            for item in additional_phones:
+                num = item.get("phone") if isinstance(item, dict) else str(item)
+                if num and num != phone and num not in [x["phone"] for x in clean_list]:
+                    clean_list.append({"phone": num})
+            if clean_list:
+                payload["additionalPhones"] = clean_list
 
-        res = self._api_call("PUT", f"/contacts/{contact_id}", payload)
-        return bool(res.get("contact", {}).get("id"))
+        # Nivel 1: Actualizacion completa
+        res = self._api_call("PUT", f"/contacts/{contact_id}", payload, max_retries=5)
+        if res.get("contact", {}).get("id"):
+            return True
+
+        # Nivel 2: Si fallaron los adicionales, actualizar solo telefono principal y tags
+        if "additionalPhones" in payload:
+            fallback_payload = {"phone": phone, "tags": tags} if phone else {"tags": tags}
+            res2 = self._api_call("PUT", f"/contacts/{contact_id}", fallback_payload, max_retries=3)
+            if res2.get("contact", {}).get("id"):
+                return True
+
+        # Nivel 3: Si el telefono entra en conflicto, actualizar al menos los tags
+        res3 = self._api_call("PUT", f"/contacts/{contact_id}", {"tags": tags}, max_retries=3)
+        return bool(res3.get("contact", {}).get("id"))
 
     def update_contact_phone(self, contact_id: str, phone: str, tags: List[str]) -> bool:
         """Compatibilidad hacia atrás."""
         return self.update_contact_phones_and_tags(contact_id, phone=phone, additional_phones=None, tags=tags)
 
     def create_contact(self, client_data: Dict[str, Any]) -> Optional[str]:
-        """Crea un contacto nuevo en Atlion, incluso si no tiene teléfono."""
+        """Crea un contacto nuevo en Atlion con reintentos y tolerancia máxima a fallos."""
         cuit = client_data.get("cuit", "").strip()
         razon_social = client_data.get("razon_social", "").strip()
         nombre_dest = client_data.get("nombre", "").strip()
@@ -171,10 +246,11 @@ class CRMSyncManager:
         else:
             tags.append("sin-telefono")
 
-        additional_phones = []
+        clean_extras = []
         for extra in phone_info.get("additional_phones", []):
-            lbl = "WhatsApp" if extra in phone_info.get("wa_numbers", []) else "Fijo"
-            additional_phones.append({"phone": extra, "phoneLabel": lbl})
+            num = extra.get("phone") if isinstance(extra, dict) else str(extra)
+            if num and num != primary_phone and num not in [x["phone"] for x in clean_extras]:
+                clean_extras.append({"phone": num})
 
         calle = (client_data.get("calle") or "").strip()
         altura = (client_data.get("altura") or "").strip()
@@ -184,20 +260,64 @@ class CRMSyncManager:
             "firstName": first_name[:40],
             "lastName": last_name[:40],
             "name": f"{first_name} {last_name}".strip(),
-            "phone": primary_phone or None,
             "locationId": self.location_id,
-            "address1": address1 or None,
-            "city": client_data.get("localidad") or None,
-            "state": client_data.get("provincia") or None,
-            "postalCode": client_data.get("codigo_postal") or None,
             "tags": tags,
-            "additionalPhones": additional_phones if additional_phones else None,
             "customFields": [{"id": self.cuit_field_id, "value": cuit}]
         }
 
-        res = self._api_call("POST", "/contacts/", payload)
+        if primary_phone:
+            payload["phone"] = primary_phone
+        if address1:
+            payload["address1"] = address1
+        if client_data.get("localidad"):
+            payload["city"] = str(client_data.get("localidad")).strip()
+        if client_data.get("provincia"):
+            payload["state"] = str(client_data.get("provincia")).strip()
+        if client_data.get("codigo_postal"):
+            payload["postalCode"] = str(client_data.get("codigo_postal")).strip()
+        if clean_extras:
+            payload["additionalPhones"] = clean_extras
+
+        # Intento 1: Payload completo (5 reintentos en caidas de red o 500)
+        res = self._api_call("POST", "/contacts/", payload, max_retries=5)
         contact = res.get("contact", {})
-        return contact.get("id")
+        cid = contact.get("id")
+
+        # Si el telefono ya existia en Atlion, GHL devuelve el contactId en meta
+        if not cid and res.get("meta", {}).get("contactId"):
+            cid = res["meta"]["contactId"]
+            self._api_call("PUT", f"/contacts/{cid}", {
+                "customFields": [{"id": self.cuit_field_id, "value": cuit}]
+            })
+            return cid
+
+        # Intento 2 (Fallback sin extras): Si algun numero adicional reboto en la validacion
+        if not cid and clean_extras:
+            payload_no_extras = dict(payload)
+            payload_no_extras.pop("additionalPhones", None)
+            res2 = self._api_call("POST", "/contacts/", payload_no_extras, max_retries=3)
+            cid = res2.get("contact", {}).get("id") or res2.get("meta", {}).get("contactId")
+            if cid:
+                if res2.get("meta", {}).get("contactId"):
+                    self._api_call("PUT", f"/contacts/{cid}", {
+                        "customFields": [{"id": self.cuit_field_id, "value": cuit}]
+                    })
+                return cid
+
+        # Intento 3 (Fallback definitivo): Si el telefono principal reboto por duplicado o formato, registrar CUIT limpio
+        if not cid and primary_phone:
+            payload_safe = dict(payload)
+            payload_safe.pop("phone", None)
+            payload_safe.pop("additionalPhones", None)
+            payload_safe["tags"] = [t for t in payload_safe["tags"] if t not in ("tiene-whatsapp", "solo-telefono-fijo", "tiene-fijo")] + ["telefono-en-conflicto"]
+            res3 = self._api_call("POST", "/contacts/", payload_safe, max_retries=3)
+            cid = res3.get("contact", {}).get("id") or res3.get("meta", {}).get("contactId")
+            if cid and res3.get("meta", {}).get("contactId"):
+                self._api_call("PUT", f"/contacts/{cid}", {
+                    "customFields": [{"id": self.cuit_field_id, "value": cuit}]
+                })
+
+        return cid
 
     def execute_production_sync(
         self,
@@ -209,6 +329,9 @@ class CRMSyncManager:
         stats = {"created": 0, "updated": 0, "errors": 0}
         total_ops = len(new_records) + len(updates_needed)
         current_op = 0
+
+        # Bloquear invocaciones a Node.js durante la subida masiva: lectura pura desde SQLite
+        self.verifier.cache_only = True
 
         # 1. Procesar Actualizaciones
         for item in updates_needed:

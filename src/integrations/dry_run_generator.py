@@ -57,9 +57,9 @@ def generate_intent_upload_file(
 ) -> Dict[str, Any]:
     
     if progress_callback:
-        progress_callback("Descargando mapa completo de contactos de Atlion CRM...", 0.05)
+        progress_callback("Obteniendo mapa de contactos de Atlion CRM...", 0.05)
 
-    atlion_map = crm.get_atlion_contacts_map()
+    atlion_map = crm.get_atlion_contacts_map(progress_callback=progress_callback)
     records = get_consolidated_records_from_source(db_records)
 
     if progress_callback:
